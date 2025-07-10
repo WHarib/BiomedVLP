@@ -8,7 +8,7 @@ Routes:
   • POST /similarity   → cosine(image ↔ text)
 """
 
-import io, subprocess, sys, torch
+import io, subprocess, sys, torch, tempfile, os
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from transformers import AutoTokenizer, AutoModel
@@ -42,7 +42,15 @@ def _text_emb(sentence: str) -> torch.Tensor:
 
 @torch.no_grad()
 def _image_emb(pil_img: Image.Image) -> torch.Tensor:
-    return image_engine.get_projected_global_embedding(pil_img)          # (512,)
+    # Save PIL image to a temp file and pass the path to HI-ML
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        pil_img.save(tmp, format="PNG")
+        tmp_path = tmp.name
+    try:
+        emb = image_engine.get_projected_global_embedding(tmp_path)  # Pass file path
+    finally:
+        os.remove(tmp_path)  # Clean up temp file
+    return emb
 
 # ── FastAPI app instance ───────────────────────────────────────────
 app = FastAPI(docs_url="/docs")
