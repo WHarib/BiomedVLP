@@ -1,15 +1,26 @@
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import JSONResponse, HTMLResponse
 from PIL import Image
-from transformers import AutoTokenizer, AutoModel
-import torch
+from transformers import pipeline, AutoTokenizer, AutoModel
 import io
 
 app = FastAPI(docs_url="/docs")
 
-# Load model and tokenizer with remote trust
-model = AutoModel.from_pretrained("microsoft/BiomedVLP-BioViL-T", trust_remote_code=True)
-tokenizer = AutoTokenizer.from_pretrained("microsoft/BiomedVLP-BioViL-T", trust_remote_code=True)
+# Load tokenizer and model
+tokenizer = AutoTokenizer.from_pretrained(
+    "microsoft/BiomedVLP-BioViL-T", trust_remote_code=True
+)
+model = AutoModel.from_pretrained(
+    "microsoft/BiomedVLP-BioViL-T", trust_remote_code=True
+)
+
+# Build a custom pipeline for vision + language
+pipe = pipeline(
+    "feature-extraction",
+    model=model,
+    tokenizer=tokenizer,
+    feature_extractor=None,
+)
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
@@ -19,30 +30,24 @@ async def root():
     )
 
 @app.post("/extract")
-async def extract(
-    file: UploadFile = File(...),
-    query: str = Form("No pleural effusion or pneumothorax is seen.")
-):
+async def extract(file: UploadFile = File(...), query: str = Form(None)):
     try:
-        image = Image.open(io.BytesIO(await file.read())).convert("RGB")
+        img = Image.open(io.BytesIO(await file.read())).convert("RGB")
 
-        # Tokenise query and remove token_type_ids
-        tokenised = tokenizer(query, return_tensors="pt")
-        tokenised.pop("token_type_ids", None)  # 🚨 FIX: Remove unsupported key
+        # Prepare inputs correctly: pipeline expects dict with keys "image" and optionally "text"
+        inputs = {"image": img}
+        if query:
+            inputs["text"] = query
 
-        with torch.no_grad():
-            # Extract embeddings
-            text_emb = model.get_projected_text_embeddings(**tokenised)
-            image_emb = model.get_projected_image_embeddings(images=[image])
-
-            # Cosine similarity
-            similarity = torch.nn.functional.cosine_similarity(text_emb, image_emb).item()
+        features = pipe(inputs)
 
         return JSONResponse({
             "query_used": query,
-            "similarity_score": round(similarity, 4)
+            "shape": [
+                len(features), len(features[0]),
+                len(features[0][0])
+            ],
+            "features": features[0][0][:10]
         })
-
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
-
