@@ -1,91 +1,77 @@
+# app.py  ───────────────────────────────────────────────────────────
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+from transformers import AutoTokenizer, AutoProcessor, AutoModel
 from PIL import Image
-from transformers import AutoTokenizer, AutoModel, pipeline
-import io, torch
+import torch, io, os
 
+MODEL_ID   = "microsoft/BiomedVLP-BioViL-T"
+REVISION   = "a3e25dcc5c11ee95e845cd9cfa66f7f0043744f4"     # pin one stable commit
+DEVICE     = "cpu"                                           # Spaces usually default to CPU
+
+# ── Load everything once at start-up ───────────────────────────────
+tokenizer  = AutoTokenizer.from_pretrained(
+                MODEL_ID, revision=REVISION, trust_remote_code=True
+            )
+processor  = AutoProcessor.from_pretrained(
+                MODEL_ID, revision=REVISION, trust_remote_code=True
+            )
+model      = AutoModel.from_pretrained(
+                MODEL_ID, revision=REVISION, trust_remote_code=True
+            ).eval()
+
+# ── FastAPI instance and landing page ─────────────────────────────
 app = FastAPI(docs_url="/docs")
 
-# ────────────────────────────────────────────────────────────
-# Load tokenizer + model once at start-up
-# ────────────────────────────────────────────────────────────
-MODEL_ID = "microsoft/BiomedVLP-BioViL-T"
-
-tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
-model     = AutoModel.from_pretrained(MODEL_ID,    trust_remote_code=True)
-
-pipe = pipeline(
-    "feature-extraction",
-    model=model,
-    tokenizer=tokenizer,
-    feature_extractor=None,           # no image preprocessor config in repo
-)
-
 @app.get("/", response_class=HTMLResponse)
-async def root():
+async def index() -> str:
     return (
-        "<h1>BioViL-T Embedding API</h1>"
+        "<h2>BioViL-T multimodal embedding API</h2>"
         "<ul>"
-        "<li>POST <code>file</code> only → image embedding</li>"
-        "<li>POST <code>query</code> only → text embedding</li>"
-        "<li>POST both → joint embedding</li>"
+        "<li><code>POST /embed_text</code> &nbsp;→ text → 512-d vector</li>"
+        "<li><code>POST /embed_image</code> → image → 512-d vector</li>"
+        "<li><code>POST /similarity</code> &nbsp;→ image + text → cosine score</li>"
         "</ul>"
     )
 
-# ────────────────────────────────────────────────────────────
-# /extract endpoint
-# ────────────────────────────────────────────────────────────
-@app.post("/extract")
-async def extract(
-    file:  UploadFile | None = File(None),   # make both optional
-    query: str        | None = Form(None)
-):
-    """
-    • Image only   → pipe(image)
-    • Text only    → pipe(text)
-    • Image + text → pipe({"image": image, "text": text})
-    """
-
-    if file is None and query is None:
-        raise HTTPException(400, "Supply at least an image or a query")
-
-    # ---------- normalise QUERY ----------
-    if isinstance(query, bytes):
-        query = query.decode()
-    if isinstance(query, list):
-        query = query[0] if query else None
-    query = query.strip() if query else None
-    # -------------------------------------
-
-    # ---------- normalise IMAGE ----------
-    img = None
-    if file is not None:
-        try:
-            img = Image.open(io.BytesIO(await file.read())).convert("RGB")
-        except Exception as e:
-            raise HTTPException(400, f"Bad image: {e}")
-    # -------------------------------------
-
-    # Build input for pipeline()
-    if img is not None and query:
-        pipe_input = {"image": img, "text": query}
-    elif img is not None:
-        pipe_input = img
-    else:  # text only
-        pipe_input = query
-
-    # Run inference
+# ── Helper functions ──────────────────────────────────────────────
+def _text_embedding(text: str) -> torch.Tensor:
+    toks = tokenizer(text, return_tensors="pt", truncation=True, max_length=128)
     with torch.no_grad():
-        feats = pipe(pipe_input)
+        return model.get_projected_text_embeddings(**toks).squeeze(0)   # (512,)
 
-    # Prepare quick summary
-    shape = [len(feats), len(feats[0]), len(feats[0][0])]
+def _image_embedding(pil_img: Image.Image) -> torch.Tensor:
+    pix = processor(images=pil_img, return_tensors="pt")
+    with torch.no_grad():
+        return model.get_projected_image_embeddings(**pix).squeeze(0)   # (512,)
 
-    return JSONResponse(
-        {
-            "image_supplied": img is not None,
-            "query_supplied": query,
-            "shape": shape,
-            "preview": feats[0][0][:10],  # first 10 dims of CLS token
-        }
-    )
+# ── /embed_text ───────────────────────────────────────────────────
+@app.post("/embed_text")
+async def embed_text(text: str = Form(...)):
+    text = text.strip()
+    if not text:
+        raise HTTPException(400, "Empty text prompt.")
+    vec = _text_embedding(text)
+    return JSONResponse({"embedding": vec.tolist()})
+
+# ── /embed_image ──────────────────────────────────────────────────
+@app.post("/embed_image")
+async def embed_image(file: UploadFile = File(...)):
+    try:
+        pil = Image.open(io.BytesIO(await file.read())).convert("RGB")
+    except Exception as e:
+        raise HTTPException(400, f"Bad image: {e}")
+    vec = _image_embedding(pil)
+    return JSONResponse({"embedding": vec.tolist()})
+
+# ── /similarity ───────────────────────────────────────────────────
+@app.post("/similarity")
+async def similarity(
+    file : UploadFile = File(...),
+    text : str        = Form(...)
+):
+    pil = Image.open(io.BytesIO(await file.read())).convert("RGB")
+    img_vec  = _image_embedding(pil)
+    text_vec = _text_embedding(text.strip())
+    score    = torch.nn.functional.cosine_similarity(img_vec, text_vec, dim=0).item()
+    return JSONResponse({"cosine_similarity": score})
