@@ -7,14 +7,10 @@ import io
 app = FastAPI(docs_url="/docs")
 
 # Load tokenizer and model
-tokenizer = AutoTokenizer.from_pretrained(
-    "microsoft/BiomedVLP-BioViL-T", trust_remote_code=True
-)
-model = AutoModel.from_pretrained(
-    "microsoft/BiomedVLP-BioViL-T", trust_remote_code=True
-)
+tokenizer = AutoTokenizer.from_pretrained("microsoft/BiomedVLP-BioViL-T", trust_remote_code=True)
+model = AutoModel.from_pretrained("microsoft/BiomedVLP-BioViL-T", trust_remote_code=True)
 
-# Build a custom pipeline for vision + language
+# Build a pipeline
 pipe = pipeline(
     "feature-extraction",
     model=model,
@@ -30,24 +26,30 @@ async def root():
     )
 
 @app.post("/extract")
-async def extract(file: UploadFile = File(...), query: str = Form(None)):
+async def extract(
+    file: UploadFile = File(...),
+    query: str = Form(None)
+):
     try:
+        # Load the image
         img = Image.open(io.BytesIO(await file.read())).convert("RGB")
 
-        # Prepare inputs correctly: pipeline expects dict with keys "image" and optionally "text"
+        # Build the input dictionary
         inputs = {"image": img}
-        if query:
-            inputs["text"] = query
+        if query and isinstance(query, str):
+            inputs["text"] = query.strip()
 
+        # Run through the pipeline
         features = pipe(inputs)
 
         return JSONResponse({
-            "query_used": query,
+            "query_used": inputs.get("text", None),
             "shape": [
                 len(features), len(features[0]),
                 len(features[0][0])
             ],
-            "features": features[0][0][:10]
+            "features": features[0][0][:10]  # preview of the embedding
         })
+
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
