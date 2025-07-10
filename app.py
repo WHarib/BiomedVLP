@@ -1,39 +1,17 @@
-# app.py ───────────────────────────────────────────────────────────
-"""
-BioViL-T multimodal embedding API
---------------------------------
-Routes
-  • POST /embed_text   → returns a 512-d text embedding
-  • POST /embed_image  → returns a 512-d image embedding
-  • POST /similarity   → returns cosine similarity (image ↔︎ text)
-"""
-
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
-from transformers import AutoTokenizer, AutoProcessor, AutoModel
+from transformers import AutoTokenizer, AutoImageProcessor, AutoModel
 from PIL import Image
 import torch, io
 
-MODEL_ID = "microsoft/BiomedVLP-BioViL-T"   # latest repo head
-DEVICE   = "cpu"                            # Hugging Face Spaces default
+MODEL_ID = "microsoft/BiomedVLP-BioViL-T"
+DEVICE = "cpu"  # Hugging Face Spaces default
 
-# ── Load model, tokenizer, processor once at start-up ─────────────
-tokenizer  = AutoTokenizer.from_pretrained(
-    MODEL_ID,
-    trust_remote_code=True,
-)  # custom CXRBertTokenizer is loaded via `auto_map`
+# Load model, tokenizer, and image processor once at startup
+tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
+image_processor = AutoImageProcessor.from_pretrained(MODEL_ID, trust_remote_code=True)
+model = AutoModel.from_pretrained(MODEL_ID, trust_remote_code=True).eval()
 
-processor  = AutoProcessor.from_pretrained(
-    MODEL_ID,
-    trust_remote_code=True,
-)
-
-model      = AutoModel.from_pretrained(
-    MODEL_ID,
-    trust_remote_code=True,
-).eval()
-
-# ── FastAPI instance & landing page ───────────────────────────────
 app = FastAPI(docs_url="/docs")
 
 @app.get("/", response_class=HTMLResponse)
@@ -47,32 +25,16 @@ async def index() -> str:
         "</ul>"
     )
 
-
-
-
-
-# ── Helper functions ──────────────────────────────────────────────
 def _text_embedding(text: str) -> torch.Tensor:
-    """Return a (512,) tensor for a single sentence."""
     toks = tokenizer(text, return_tensors="pt", truncation=True, max_length=128)
     with torch.no_grad():
         return model.get_projected_text_embeddings(**toks).squeeze(0)
 
 def _image_embedding(pil_img: Image.Image) -> torch.Tensor:
-    """
-    Return a (512,) tensor for a single chest-X-ray image.
-
-    BioViL-T’s AutoProcessor expects *both* modalities in one call, so calling
-    `processor(images=pil_img)` alone raises the “You need to specify text…”
-    error you just saw.  The internal `image_processor` does not have that
-    constraint, so we use it directly.
-    """
-    pix = processor.image_processor(images=pil_img, return_tensors="pt")
+    pix = image_processor(images=pil_img, return_tensors="pt")
     with torch.no_grad():
         return model.get_projected_image_embeddings(**pix).squeeze(0)
 
-
-# ── /embed_text ───────────────────────────────────────────────────
 @app.post("/embed_text")
 async def embed_text(text: str = Form(...)):
     text = text.strip()
@@ -81,7 +43,6 @@ async def embed_text(text: str = Form(...)):
     vec = _text_embedding(text)
     return JSONResponse({"embedding": vec.tolist()})
 
-# ── /embed_image ──────────────────────────────────────────────────
 @app.post("/embed_image")
 async def embed_image(file: UploadFile = File(...)):
     try:
@@ -91,14 +52,10 @@ async def embed_image(file: UploadFile = File(...)):
     vec = _image_embedding(pil)
     return JSONResponse({"embedding": vec.tolist()})
 
-# ── /similarity ───────────────────────────────────────────────────
 @app.post("/similarity")
-async def similarity(
-    file: UploadFile = File(...),
-    text: str       = Form(...)
-):
-    pil       = Image.open(io.BytesIO(await file.read())).convert("RGB")
-    img_vec   = _image_embedding(pil)
-    text_vec  = _text_embedding(text.strip())
-    score     = torch.nn.functional.cosine_similarity(img_vec, text_vec, dim=0).item()
+async def similarity(file: UploadFile = File(...), text: str = Form(...)):
+    pil = Image.open(io.BytesIO(await file.read())).convert("RGB")
+    img_vec = _image_embedding(pil)
+    text_vec = _text_embedding(text.strip())
+    score = torch.nn.functional.cosine_similarity(img_vec, text_vec, dim=0).item()
     return JSONResponse({"cosine_similarity": score})
