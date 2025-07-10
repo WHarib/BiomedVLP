@@ -10,9 +10,10 @@ COPY . .
 
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Set cache location to somewhere writable
-RUN mkdir -p /data/hf_cache
-ENV TRANSFORMERS_CACHE=/data/hf_cache
+# Use a cache directory that is always writable
+RUN mkdir -p /tmp/hf_cache
+ENV TRANSFORMERS_CACHE=/tmp/hf_cache
+ENV HF_HOME=/tmp/hf_home
 
 EXPOSE 7860
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7860"]
