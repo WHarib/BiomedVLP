@@ -39,16 +39,18 @@ image_engine = get_image_inference("biovil_t")
 @torch.no_grad()
 def _text_emb(sentence: str) -> torch.Tensor:
     toks = tokenizer(sentence, return_tensors="pt", truncation=True, max_length=128)
-    return text_model.get_projected_text_embeddings(**toks).squeeze(0)   # (512,)
+    # Remove token_type_ids if present
+    if "token_type_ids" in toks:
+        toks.pop("token_type_ids")
+    return text_model.get_projected_text_embeddings(**toks).squeeze(0)
 
 @torch.no_grad()
 def _image_emb(pil_img: Image.Image) -> torch.Tensor:
-    # Save image temporarily and pass as a Path
     with tempfile.NamedTemporaryFile(suffix=".jpg", delete=True) as tmp:
         pil_img.save(tmp.name)
         tmp.flush()
         emb = image_engine.get_projected_global_embedding(Path(tmp.name))
-    return emb  # (512,)
+    return emb
 
 # ── FastAPI app instance ───────────────────────────────────────────
 app = FastAPI(docs_url="/docs")
