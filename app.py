@@ -8,35 +8,34 @@ Routes:
   • POST /similarity   → cosine(image ↔ text)
 """
 
-# stdlib & installs at cold-start
 import io, subprocess, sys, torch
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from transformers import AutoTokenizer, AutoModel
 from PIL import Image
 
-# ── constants ──────────────────────────────────────────────────────
-TEXT_MODEL_ID = "microsoft/BiomedVLP-BioViL-T"   # CXRBERT inside BioViL-T
-DEVICE        = torch.device("cpu")              # Space default
+# Model ID for both text and image
+TEXT_MODEL_ID = "microsoft/BiomedVLP-BioViL-T"
+DEVICE = torch.device("cpu")
 
-# ── install HI-ML if absent (adds ~5-10 s to first cold-start) ─────
+# Auto-install HI-ML Multimodal if missing
 try:
     import health_multimodal                              # noqa: F401
-except ImportError:                                       # pragma: no cover
-    subprocess.check_call(
-        [sys.executable, "-m", "pip", "install", "-q",
-         "hi-ml-multimodal>=0.2.1", "pydicom", "opencv-python-headless"]
-    )
-from health_multimodal.image.utils import get_image_inference
-from health_multimodal.image import ImageModelType
+except ImportError:
+    subprocess.check_call([
+        sys.executable, "-m", "pip", "install", "-q",
+        "hi-ml-multimodal>=0.2.1", "pydicom", "opencv-python-headless"
+    ])
 
-# ── load models once ───────────────────────────────────────────────
+from health_multimodal.image.utils import get_image_inference
+
+# ── Load models once ───────────────────────────────────────────────
 tokenizer  = AutoTokenizer.from_pretrained(TEXT_MODEL_ID, trust_remote_code=True)
 text_model = AutoModel.from_pretrained(TEXT_MODEL_ID,   trust_remote_code=True).eval()
 
-image_engine = get_image_inference(ImageModelType.BIOVIL_T)  # handles weights + transforms
+# This now works for all HI-ML versions, no enum import needed!
+image_engine = get_image_inference("biovil_t")
 
-# ── helper functions ──────────────────────────────────────────────
 @torch.no_grad()
 def _text_emb(sentence: str) -> torch.Tensor:
     toks = tokenizer(sentence, return_tensors="pt", truncation=True, max_length=128)
@@ -46,11 +45,10 @@ def _text_emb(sentence: str) -> torch.Tensor:
 def _image_emb(pil_img: Image.Image) -> torch.Tensor:
     return image_engine.get_projected_global_embedding(pil_img)          # (512,)
 
-# ── FastAPI app ────────────────────────────────────────────────────
 app = FastAPI(docs_url="/docs")
 
 @app.get("/", response_class=HTMLResponse)
-async def root() -> str:   # noqa: D401
+async def root() -> str:
     return (
         "<h2>BioViL-T multimodal embedding API</h2>"
         "<ul>"
@@ -60,7 +58,6 @@ async def root() -> str:   # noqa: D401
         "</ul>"
     )
 
-# ── /embed_text ────────────────────────────────────────────────────
 @app.post("/embed_text")
 async def embed_text(text: str = Form(...)):
     text = text.strip()
@@ -69,21 +66,19 @@ async def embed_text(text: str = Form(...)):
     vec = _text_emb(text)
     return JSONResponse({"embedding": vec.tolist()})
 
-# ── /embed_image ───────────────────────────────────────────────────
 @app.post("/embed_image")
 async def embed_image(file: UploadFile = File(...)):
     try:
         pil = Image.open(io.BytesIO(await file.read())).convert("RGB")
-    except Exception as e:                                       # noqa: BLE001
+    except Exception as e:
         raise HTTPException(400, f"Bad image: {e}")
     vec = _image_emb(pil)
     return JSONResponse({"embedding": vec.tolist()})
 
-# ── /similarity ────────────────────────────────────────────────────
 @app.post("/similarity")
 async def similarity(file: UploadFile = File(...), text: str = Form(...)):
-    pil  = Image.open(io.BytesIO(await file.read())).convert("RGB")
-    img_vec  = _image_emb(pil)
+    pil = Image.open(io.BytesIO(await file.read())).convert("RGB")
+    img_vec = _image_emb(pil)
     text_vec = _text_emb(text.strip())
     score = torch.nn.functional.cosine_similarity(img_vec, text_vec, dim=0).item()
     return JSONResponse({"cosine_similarity": score})
