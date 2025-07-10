@@ -1,6 +1,7 @@
 torch>=2.0
 transformers>=4.37
 hi-ml-multimodal>=0.2.1
+python-multipart
 pydicom
 opencv-python-headless
 fastapi

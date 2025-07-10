@@ -15,12 +15,12 @@ from transformers import AutoTokenizer, AutoModel
 from PIL import Image
 
 # Model ID for both text and image
-TEXT_MODEL_ID = "microsoft/BiomedVLP-BioViL-T"
+MODEL_ID = "microsoft/BiomedVLP-BioViL-T"
 DEVICE = torch.device("cpu")
 
 # Auto-install HI-ML Multimodal if missing
 try:
-    import health_multimodal                              # noqa: F401
+    import health_multimodal  # noqa: F401
 except ImportError:
     subprocess.check_call([
         sys.executable, "-m", "pip", "install", "-q",
@@ -30,12 +30,11 @@ except ImportError:
 from health_multimodal.image.utils import get_image_inference
 
 # ── Load models once ───────────────────────────────────────────────
-tokenizer  = AutoTokenizer.from_pretrained(TEXT_MODEL_ID, trust_remote_code=True)
-text_model = AutoModel.from_pretrained(TEXT_MODEL_ID,   trust_remote_code=True).eval()
-
-# This now works for all HI-ML versions, no enum import needed!
+tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
+text_model = AutoModel.from_pretrained(MODEL_ID, trust_remote_code=True).eval()
 image_engine = get_image_inference("biovil_t")
 
+# ── Embedding helper functions ─────────────────────────────────────
 @torch.no_grad()
 def _text_emb(sentence: str) -> torch.Tensor:
     toks = tokenizer(sentence, return_tensors="pt", truncation=True, max_length=128)
@@ -45,6 +44,7 @@ def _text_emb(sentence: str) -> torch.Tensor:
 def _image_emb(pil_img: Image.Image) -> torch.Tensor:
     return image_engine.get_projected_global_embedding(pil_img)          # (512,)
 
+# ── FastAPI app instance ───────────────────────────────────────────
 app = FastAPI(docs_url="/docs")
 
 @app.get("/", response_class=HTMLResponse)
@@ -77,8 +77,14 @@ async def embed_image(file: UploadFile = File(...)):
 
 @app.post("/similarity")
 async def similarity(file: UploadFile = File(...), text: str = Form(...)):
-    pil = Image.open(io.BytesIO(await file.read())).convert("RGB")
+    try:
+        pil = Image.open(io.BytesIO(await file.read())).convert("RGB")
+    except Exception as e:
+        raise HTTPException(400, f"Bad image: {e}")
+    text_clean = text.strip()
+    if not text_clean:
+        raise HTTPException(400, "Empty text prompt.")
     img_vec = _image_emb(pil)
-    text_vec = _text_emb(text.strip())
+    text_vec = _text_emb(text_clean)
     score = torch.nn.functional.cosine_similarity(img_vec, text_vec, dim=0).item()
     return JSONResponse({"cosine_similarity": score})
