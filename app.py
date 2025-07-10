@@ -47,6 +47,10 @@ async def index() -> str:
         "</ul>"
     )
 
+
+
+
+
 # ── Helper functions ──────────────────────────────────────────────
 def _text_embedding(text: str) -> torch.Tensor:
     """Return a (512,) tensor for a single sentence."""
@@ -55,10 +59,18 @@ def _text_embedding(text: str) -> torch.Tensor:
         return model.get_projected_text_embeddings(**toks).squeeze(0)
 
 def _image_embedding(pil_img: Image.Image) -> torch.Tensor:
-    """Return a (512,) tensor for a single chest X-ray image."""
-    pix = processor(images=pil_img, return_tensors="pt")
+    """
+    Return a (512,) tensor for a single chest-X-ray image.
+
+    BioViL-T’s AutoProcessor expects *both* modalities in one call, so calling
+    `processor(images=pil_img)` alone raises the “You need to specify text…”
+    error you just saw.  The internal `image_processor` does not have that
+    constraint, so we use it directly.
+    """
+    pix = processor.image_processor(images=pil_img, return_tensors="pt")
     with torch.no_grad():
         return model.get_projected_image_embeddings(**pix).squeeze(0)
+
 
 # ── /embed_text ───────────────────────────────────────────────────
 @app.post("/embed_text")
