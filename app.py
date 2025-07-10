@@ -6,7 +6,7 @@ import io
 
 app = FastAPI(docs_url="/docs")
 
-# Load pipeline at startup
+# Load the multimodal feature-extraction pipeline
 pipe = pipeline("feature-extraction", model="microsoft/BiomedVLP-BioViL-T", trust_remote_code=True)
 
 @app.get("/", response_class=HTMLResponse)
@@ -19,22 +19,21 @@ async def root():
 @app.post("/extract")
 async def extract(
     file: UploadFile = File(...),
-    query: str = Form(None)  # Make the query optional; use `Form(...)` if required
+    query: str = Form(None)
 ):
     try:
         image = Image.open(io.BytesIO(await file.read())).convert("RGB")
 
-        # Use query if provided (adapt logic as per your requirement)
+        # If a query is provided, use multimodal input
         if query:
-            features = pipe(image, query)
+            features = pipe({"image": image, "text": query})
         else:
             features = pipe(image)
 
-        # features: list [1][sequence_len][hidden_dim], process as needed
         return JSONResponse({
             "query_used": query,
             "shape": [len(features), len(features[0]), len(features[0][0])],
-            "features": features[0][0][:10]  # only first 10 features of first token
+            "features": features[0][0][:10]  # Show first 10 features for brevity
         })
 
     except Exception as e:
