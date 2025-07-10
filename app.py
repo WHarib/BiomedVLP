@@ -26,12 +26,13 @@ async def extract(
     try:
         image = Image.open(io.BytesIO(await file.read())).convert("RGB")
 
-        with torch.no_grad():
-            # Get text embedding
-            tokenised = tokenizer(query, return_tensors="pt")
-            text_emb = model.get_projected_text_embeddings(**tokenised)
+        # Tokenise query and remove token_type_ids
+        tokenised = tokenizer(query, return_tensors="pt")
+        tokenised.pop("token_type_ids", None)  # 🚨 FIX: Remove unsupported key
 
-            # Get image embedding
+        with torch.no_grad():
+            # Extract embeddings
+            text_emb = model.get_projected_text_embeddings(**tokenised)
             image_emb = model.get_projected_image_embeddings(images=[image])
 
             # Cosine similarity
@@ -44,3 +45,4 @@ async def extract(
 
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
