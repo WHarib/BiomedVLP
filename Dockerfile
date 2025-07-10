@@ -10,10 +10,11 @@ COPY . .
 
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Use a cache directory that is always writable
-RUN mkdir -p /tmp/hf_cache
-ENV TRANSFORMERS_CACHE=/tmp/hf_cache
-ENV HF_HOME=/tmp/hf_home
+# Set Hugging Face cache directory and ensure permissions for non-root
+RUN mkdir -p /app/hf_home \
+    && chmod -R 777 /app/hf_home
+
+ENV HF_HOME=/app/hf_home
 
 EXPOSE 7860
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7860"]
